@@ -49,10 +49,10 @@ class LearnRequest(BaseModel):
 # LinUCB Contextual Bandit Implementation
 class LinUCBBandit:
     """
-    Linear Upper Confidence Bound bandit for SMART Recovery tool selection.
-    Balances exploration vs exploitation based on user context and feedback.
+    Enhanced Linear Upper Confidence Bound bandit for SMART Recovery tool selection.
+    Phase 2: Supports 16-dimensional feature vectors with advanced contextual signals.
     """
-    def __init__(self, n_actions: int, n_features: int, alpha: float = 1.0):
+    def __init__(self, n_actions: int, n_features: int = 16, alpha: float = 1.0):
         self.n_actions = n_actions
         self.n_features = n_features
         self.alpha = alpha  # Exploration parameter
@@ -62,6 +62,16 @@ class LinUCBBandit:
         self.b = [np.zeros(n_features) for _ in range(n_actions)]
         
         self.actions = ["CBA", "ABCD", "VACI", "IFTHENT", "BREATH", "JOURNAL", "URGELOG"]
+        
+        # Feature importance tracking for explainability
+        self.feature_names = [
+            "mood", "stress", "urge_level", "energy",
+            "sleep_quality", "workload", "social_support", 
+            "time_of_day", "day_of_week",
+            "streak_normalized", "streak_momentum",
+            "emotional_volatility", "core_balance", "contextual_risk",
+            "recent_tool_effectiveness", "tool_diversity_score"
+        ]
         
     def choose_action(self, features: np.ndarray) -> tuple[int, float, str]:
         """
@@ -97,29 +107,77 @@ class LinUCBBandit:
         self.b[action] += reward * features
     
     def _generate_rationale(self, features: np.ndarray, action: int, confidence: float) -> str:
-        """Generate human-readable rationale for action selection."""
+        """Generate enhanced human-readable rationale for action selection."""
         action_name = self.actions[action]
         
-        # Feature interpretation (assumes specific feature encoding)
+        # Extract key features with proper bounds checking
         mood = features[0] if len(features) > 0 else 0.5
         stress = features[1] if len(features) > 1 else 0.5
         urge_level = features[2] if len(features) > 2 else 0.5
+        energy = features[3] if len(features) > 3 else 0.5
+        emotional_volatility = features[11] if len(features) > 11 else 0.5
+        contextual_risk = features[13] if len(features) > 13 else 0.5
         
-        rationales = {
-            "CBA": f"Cost-Benefit Analysis recommended due to decision-making context (confidence: {confidence:.2f})",
-            "ABCD": f"ABCD worksheet suggested for thought restructuring (mood: {mood:.2f}, confidence: {confidence:.2f})",
-            "VACI": f"Values & Commitment planning fits your growth context (confidence: {confidence:.2f})",
-            "IFTHENT": f"If-Then planning recommended for urge management (urge level: {urge_level:.2f})",
-            "BREATH": f"Breathing exercise suggested for immediate regulation (stress: {stress:.2f})",
-            "JOURNAL": f"Journaling recommended for reflection and processing (confidence: {confidence:.2f})",
-            "URGELOG": f"Urge logging suggested for pattern awareness (urge level: {urge_level:.2f})"
+        # Determine primary reasoning factors
+        high_stress = stress > 0.7
+        high_urge = urge_level > 0.6
+        low_mood = mood < 0.4
+        low_energy = energy < 0.4
+        high_volatility = emotional_volatility > 0.6
+        high_risk = contextual_risk > 0.6
+        
+        # Enhanced rationales based on multiple factors
+        base_rationales = {
+            "CBA": "Cost-Benefit Analysis helps clarify decisions when facing important choices",
+            "ABCD": "ABCD worksheet restructures unhelpful thought patterns", 
+            "VACI": "Values & Commitment planning aligns actions with your core values",
+            "IFTHENT": "If-Then planning prepares you for challenging situations",
+            "BREATH": "4-7-8 breathing provides immediate physiological calm",
+            "JOURNAL": "Journaling processes emotions and builds self-awareness",
+            "URGELOG": "Urge logging identifies patterns and builds coping skills"
         }
         
-        return rationales.get(action_name, f"{action_name} selected with confidence {confidence:.2f}")
+        # Add contextual reasoning
+        context_factors = []
+        
+        if high_stress and action_name == "BREATH":
+            context_factors.append(f"high stress level ({stress:.1f})")
+        if high_urge and action_name in ["URGELOG", "IFTHENT"]:
+            context_factors.append(f"elevated urges ({urge_level:.1f})")
+        if low_mood and action_name in ["ABCD", "JOURNAL"]:
+            context_factors.append(f"low mood ({mood:.1f})")
+        if high_volatility:
+            context_factors.append("emotional instability")
+        if high_risk:
+            context_factors.append("high-risk context")
+        
+        rationale = base_rationales.get(action_name, f"{action_name} recommended")
+        
+        if context_factors:
+            rationale += f" given {', '.join(context_factors)}"
+        
+        rationale += f" (confidence: {confidence:.2f})"
+        
+        return rationale
+    
+    def get_feature_importance(self, action: int) -> dict[str, float]:
+        """Get feature importance scores for explainability."""
+        if action >= len(self.b):
+            return {}
+            
+        # Use learned parameters as importance proxy
+        theta = np.linalg.inv(self.A[action]) @ self.b[action]
+        importance_scores = np.abs(theta)
+        
+        # Normalize to [0, 1]
+        if importance_scores.max() > 0:
+            importance_scores = importance_scores / importance_scores.max()
+            
+        return dict(zip(self.feature_names, importance_scores))
 
-# Global bandit instance
+# Global bandit instance  
 BANDIT_STATE_FILE = Path("bandit_state.json")
-bandit = LinUCBBandit(n_actions=7, n_features=10, alpha=1.0)
+bandit = LinUCBBandit(n_actions=7, n_features=16, alpha=1.0)
 
 def save_bandit_state():
     """Save bandit state to disk for persistence."""
@@ -244,7 +302,44 @@ async def get_stats():
         "actions": bandit.actions,
         "n_features": bandit.n_features,
         "alpha": bandit.alpha,
-        "total_interactions": sum(np.trace(A) for A in bandit.A)
+        "total_interactions": sum(np.trace(A) for A in bandit.A),
+        "feature_names": bandit.feature_names
+    }
+
+@app.post("/explain")
+async def explain_recommendation(request: ChooseRequest):
+    """
+    Provide detailed explanation for why a particular action was recommended.
+    Returns feature importance and decision factors.
+    """
+    features = np.array(request.features)
+    
+    # Get recommendation
+    action_idx, confidence, rationale = bandit.choose_action(features)
+    action = bandit.actions[action_idx]
+    
+    # Get feature importance for this action
+    feature_importance = bandit.get_feature_importance(action_idx)
+    
+    # Get top contributing features
+    top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    return {
+        "recommended_action": action,
+        "confidence": confidence,
+        "rationale": rationale,
+        "top_contributing_features": [
+            {"feature": name, "importance": float(importance), "value": float(features[i])}
+            for i, (name, importance) in enumerate(top_features) if i < len(features)
+        ],
+        "feature_values": dict(zip(bandit.feature_names, features.tolist())),
+        "decision_factors": {
+            "high_stress": float(features[1]) > 0.7 if len(features) > 1 else False,
+            "high_urges": float(features[2]) > 0.6 if len(features) > 2 else False,
+            "low_mood": float(features[0]) < 0.4 if len(features) > 0 else False,
+            "emotional_instability": float(features[11]) > 0.6 if len(features) > 11 else False,
+            "high_risk_context": float(features[13]) > 0.6 if len(features) > 13 else False
+        }
     }
 
 if __name__ == "__main__":

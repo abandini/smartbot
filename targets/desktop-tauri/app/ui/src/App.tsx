@@ -7,6 +7,10 @@ import CheckIn from './components/CheckIn';
 import Journal from './components/Journal';
 import UrgeLog from './components/UrgeLog';
 import VACIForm from './components/tools/VACIForm';
+import CBAForm from './components/tools/CBAForm';
+import ABCDForm from './components/tools/ABCDForm';
+import IfThenForm from './components/tools/IfThenForm';
+import BreathingExercise from './components/tools/BreathingExercise';
 
 // State & Logic
 import { modeMachine } from './state/machine';
@@ -114,6 +118,14 @@ function App() {
         return <UrgeLog onComplete={handleToolComplete} />;
       case 'VACI':
         return <VACIForm onComplete={handleToolComplete} />;
+      case 'CBA':
+        return <CBAForm onComplete={handleToolComplete} />;
+      case 'ABCD':
+        return <ABCDForm onComplete={handleToolComplete} />;
+      case 'IFTHENT':
+        return <IfThenForm onComplete={handleToolComplete} />;
+      case 'BREATH':
+        return <BreathingExercise onComplete={handleToolComplete} />;
       default:
         return null;
     }
@@ -124,11 +136,11 @@ function App() {
     const mode = modeState.context.currentMode;
     
     if (mode === 'Crisis') {
-      return ['URGELOG', 'BREATH', 'JOURNAL'];
+      return ['BREATH', 'URGELOG', 'IFTHENT', 'JOURNAL'];
     } else if (mode === 'Flow') {
-      return ['JOURNAL', 'VACI'];
+      return ['JOURNAL', 'VACI', 'BREATH'];
     } else {
-      return ['JOURNAL', 'URGELOG', 'VACI', 'CBA', 'ABCD'];
+      return ['JOURNAL', 'URGELOG', 'VACI', 'CBA', 'ABCD', 'IFTHENT', 'BREATH'];
     }
   };
 
